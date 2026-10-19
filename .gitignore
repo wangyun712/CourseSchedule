@@ -1,0 +1,23 @@
+# ── IDE ──
+*.iml
+/.idea
+.DS_Store
+
+# ── 构建产物 ──
+# 注意：写 `/build` 只挡根目录，模块下的 app/build（实测 70MB）挡不住，
+# 所以这里用不带斜杠的 `build/`，匹配任意层级。
+build/
+.gradle/
+.kotlin/
+/captures
+*.hprof
+
+# ── 本机配置与签名文件，绝对不能进仓库 ──
+# local.properties 里有本机 Android SDK 绝对路径，别人拉下来是错的
+local.properties
+*.jks
+*.keystore
+
+# ── NDK ──
+.externalNativeBuild
+.cxx
