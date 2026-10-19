@@ -21,3 +21,7 @@ local.properties
 # ── NDK ──
 .externalNativeBuild
 .cxx
+
+# ── 工作区内部数据 ──
+# 这里是开发过程中的笔记和记忆，不属于项目源码，也不该出现在公开仓库里
+.workbuddy/
