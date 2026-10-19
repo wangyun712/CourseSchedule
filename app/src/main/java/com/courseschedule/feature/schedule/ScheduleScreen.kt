@@ -1,13 +1,16 @@
 package com.courseschedule.feature.schedule
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,10 +28,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,6 +81,15 @@ import java.time.LocalDate
 private val CELL_HEIGHT = 50.dp
 private val LABEL_WIDTH = 46.dp
 private val HEADER_HEIGHT = 44.dp
+
+/**
+ * 今日卡片默认最多显示几节。
+ *
+ * 卡片钉在课格上方，它每高一行，课格就少一行。3 是权衡后的值：
+ * 大多数日子不超过 4 节，3 行刚好占满卡片又不至于把课格挤没。
+ * 更长的日子靠「展开全部」展开，不是截断数据。
+ */
+private const val TODAY_ROWS_COLLAPSED = 3
 
 /**
  * 课表主界面：周次栏 + 今日课程卡片 + 星期表头 + 7×N 课格。
@@ -129,7 +146,7 @@ fun ScheduleScreen(
      *
      * 注意下面那行的调用形式：`{ ScheduleViewModel(it) }` 里的 `it` 就是 Repository。
      */
-    val viewModel = appViewModel { ScheduleViewModel(it) }
+    val viewModel = appViewModel { ScheduleViewModel(it.repository) }
 
     /**
      * 订阅状态流，并转成 Compose 能感知的 `State`。
@@ -193,7 +210,7 @@ fun ScheduleScreen(
             onBackToCurrent = viewModel::goToCurrentWeek,
             onOpenSettings = onOpenSettings
         )
-        TodayCard(state = state, onEditCourse = onEditCourse)
+        TodayCard(state = state)
         WeekHeader(state)
         Box(
             Modifier
@@ -356,16 +373,45 @@ private fun WeekBar(
 }
 
 /**
- * 今日课程卡片。
+ * 今日课程卡片。**钉在课表上方，不随课格一起滚动。**
  *
- * 两种形态：
- * 1. **非本周**时显示一条提示（"正在浏览第 N 周"），因为"今天"只对本周有意义；
- * 2. **本周**时列出今天所有课，正在上的那节带"上课中"标签。
+ * 布局参考了常见的课表 app（日程式竖排 + 时间轴），但按本项目的数据做了取舍：
  *
- * @param onEditCourse 点某一节课时跳去编辑。
+ * ```
+ * ┌──────────────────────────────────────────┐
+ * │ 今日课程                     共 3 节      │
+ * │ ┌──────────────────────────────────────┐ │
+ * │ │        2026 年 10 月 20 日 周二       │ │
+ * │ └──────────────────────────────────────┘ │
+ * │ 09:50 ● 计算机网络                      │
+ * │       │  第 3~5 节 · 九龙湖教三-401      │
+ * │ 14:00 ● 计算机系统结构                   │
+ * │       │  第 6~7 节 · 九龙湖教四-101      │
+ * └──────────────────────────────────────────┘
+ * ```
+ *
+ * ## 为什么默认只显示 3 节
+ *
+ * 这张卡片在可滚动的课格**上方**，卡片每长高一点，课格就矮一点。
+ * 一天 5~6 节课全部铺开，课格会被挤到只剩两三行，反而不好用。
+ * 所以默认显示前 3 节，多出来的收在「展开全部」后面——
+ * **数据一条都不藏，只是默认折叠**。
+ *
+ * ## 两种形态
+ *
+ * 1. **非本周**：只显示一条提示，因为"今天"只对本周有意义；
+ * 2. **本周**：日期条 + 今日课程时间轴。
+ *
+ * ## 这张卡片**不可点击**
+ *
+ * 早先这里每一行都能点进课程编辑页，现在去掉了。原因：它是"看了一眼就走"的
+ * 信息卡，不是导航入口。整块区域可点会让上下滚动课表时误触——
+ * 手指从卡片上划过就跳走了。要编辑某门课，去下面的课格点那个色块。
+ *
+ * @param state 课表状态，卡片只读它，不往外抛任何事件。
  */
 @Composable
-private fun TodayCard(state: ScheduleUiState, onEditCourse: (Long) -> Unit) {
+private fun TodayCard(state: ScheduleUiState) {
     /**
      * 非本周 → 只显示提示，然后提前返回。
      *
@@ -387,144 +433,267 @@ private fun TodayCard(state: ScheduleUiState, onEditCourse: (Long) -> Unit) {
      * （读写文件、发请求、改外部状态）才需要包在 `LaunchedEffect` 里。**
      */
     val date = LocalDate.ofEpochDay(state.todayEpochDay)
+    val entries = state.todayEntries
+
+    /**
+     * 折叠状态用 `rememberSaveable` 而不是 `remember`：
+     * 后者在转屏、切深色模式时会被清掉，用户刚点开的列表会自己收回去。
+     *
+     * 注意它**不是**业务状态，没必要放进 ViewModel——
+     * "这张卡片展开着"跟数据无关，进程被杀之后重置成折叠也是合理的。
+     */
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val visible = if (expanded) entries else entries.take(TODAY_ROWS_COLLAPSED)
+    val hiddenCount = entries.size - visible.size
+
     CardShell(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("今日课程")
-                HintText(
-                    text = "${date.monthValue} 月 ${date.dayOfMonth} 日 ${weekDayName(date.dayOfWeek.value)}",
-                    modifier = Modifier.padding(start = 8.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SectionTitle("今日课程")
+                    /**
+                     * "上课中"标签。`entry.ongoing` 由 ViewModel 每 30 秒重算，
+                     * 所以它会在上课时间到点时自动亮起，不需要任何额外的定时逻辑。
+                     *
+                     * 这里提到标题旁边而不是某一行里：它描述的是"此刻的状态"，
+                     * 放在卡片级别，扫一眼就知道现在该去上课了。
+                     */
+                    if (entries.any { it.ongoing }) {
+                        Box(
+                            Modifier
+                                .padding(start = 8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = "上课中",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
+                    }
+                }
+                HintText(if (entries.isEmpty()) "今天没课" else "共 ${entries.size} 节")
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            /**
+             * 日期条。
+             *
+             * 用 `primaryContainer.copy(alpha = 0.45f)` 而不是写死一个浅蓝：
+             * 深浅两套主题都有自己的 `primaryContainer`，写死颜色在深色模式下
+             * 会变成一块刺眼的亮斑。
+             */
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
+                    .padding(vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${date.year}年${date.monthValue}月${date.dayOfMonth}日 " +
+                        weekDayName(date.dayOfWeek.value),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
+
             /**
              * 空态处理。列表为空时显示一句提示，而不是留一片空白——
              * 空白会让用户以为"是不是没加载出来"。
              */
-            if (state.todayEntries.isEmpty()) {
-                EmptyHint("今天没有课")
+            if (entries.isEmpty()) {
+                EmptyHint("今天没有课，好好休息")
             } else {
+                Spacer(Modifier.height(2.dp))
                 /**
-                 * `forEach` 直接遍历渲染，**没有用 `LazyColumn`**。
+                 * `forEach` 直接遍历渲染，**没有用 LazyColumn**。
                  *
                  * 原因：一天的课最多十几节，全部渲染的开销可以忽略；
                  * 而 LazyColumn 会引入"只有可见项被渲染"的复杂度，
                  * 还在这个已经在滚动容器里的场景下容易出高度问题。
                  * **列表短就用 forEach，长（几十条以上）才用 LazyColumn。**
                  */
-                state.todayEntries.forEach { entry ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        /**
-                         * 固定宽度的左侧时间列。
-                         *
-                         * 宽度写死 52dp 是为了**让所有行的课程名左边缘对齐**。
-                         * 如果用自适应宽度，`08:00` 和 `09:40` 宽度一样没问题，
-                         * 但一旦出现 `8:00` 这种短字符串（理论上不会，
-                         * 因为 [TimeUtils.minutesToText] 一定补零），列宽就会跳。
-                         */
-                        Column(Modifier.width(52.dp)) {
-                            Text(
-                                text = TimeUtils.minutesToText(entry.startMinute),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = TimeUtils.minutesToText(entry.endMinute),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        /**
-                         * 课程颜色的小竖条。
-                         *
-                         * 用 `Box` + 链式 `Modifier` 画一个纯色矩形——
-                         * Compose 里没有"色块"这种控件，但用
-                         * `Modifier.background()` 配 `clip()` 就能画出来。
-                         * 所以**不要觉得"没有对应控件就画不出来"**，
-                         * 绝大多数视觉元素都能用 Box + Modifier 拼出来。
-                         *
-                         * `CoursePalette.colorOf(index)` 会做取模，
-                         * 所以 `colorIndex` 越界也不会崩。
-                         */
-                        Box(
-                            Modifier
-                                .width(4.dp)
-                                .height(30.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(CoursePalette.colorOf(entry.course.colorIndex))
-                        )
-                        Column(
-                            Modifier
-                            /**
-                             * `weight(1f)` 让这一列把剩余宽度全吃掉。
-                             * 这样长课程名会正常换行/省略，而不是把
-                             * 右侧挤出屏幕。
-                             */
-                                .weight(1f)
-                                .padding(start = 10.dp)
-                                .clickable { onEditCourse(entry.course.id) }
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = entry.course.name,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                /**
-                                 * "上课中"标签。`entry.ongoing` 由 ViewModel 每 30 秒重算，
-                                 * 所以它会在上课时间到点时自动亮起，不需要任何额外的定时逻辑。
-                                 */
-                                if (entry.ongoing) {
-                                    Box(
-                                        Modifier
-                                            .padding(start = 6.dp)
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(MaterialTheme.colorScheme.primary)
-                                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                                    ) {
-                                        Text(
-                                            text = "上课中",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                    }
-                                }
-                            }
-                            /**
-                             * 拼出"教室 · 教师 · 第 1-2 节"这一行。
-                             *
-                             * ## `listOfNotNull` 解决什么问题
-                             *
-                             * 教室和教师都可能为空。如果直接拼
-                             * `"${room} · ${teacher} · 第 x-y 节"`，
-                             * 没教室时会出现"` · 张三 · 第 1-2 节`"
-                             * 这种以分隔符开头的难看结果。
-                             *
-                             * `listOfNotNull(a, b, c)` 会把 `null` 元素**直接丢掉**，
-                             * 再用 `joinToString(" · ")` 拼起来，分隔符就不会多余。
-                             * 所以这里的 `ifBlank { null }` 是刻意的——
-                             * 把"空字符串"转成 `null` 好让 `listOfNotNull` 丢掉它。
-                             *
-                             * 最后那一项"第 x-y 节"永远非空，所以结果一定不会是空串。
-                             *
-                             * 这个模式（把可选的字符串转成 null、用 listOfNotNull 收集、
-                             * joinToString 拼接）在 Android 里非常常见，值得记住。
-                             */
-                            val sub = listOfNotNull(
-                                entry.room.ifBlank { null },
-                                entry.course.teacher.ifBlank { null },
-                                "第 ${entry.slot.startSection}-${entry.slot.endSection} 节"
-                            ).joinToString(" · ")
-                            HintText(sub)
-                        }
-                    }
+                visible.forEachIndexed { index, entry ->
+                    TodayRow(entry = entry, isLast = index == visible.lastIndex)
+                }
+                if (hiddenCount > 0) {
+                    TextButton(
+                        onClick = { expanded = true },
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+                    ) { Text("展开全部（还有 $hiddenCount 节）", fontSize = 12.sp) }
+                } else if (expanded && entries.size > TODAY_ROWS_COLLAPSED) {
+                    TextButton(
+                        onClick = { expanded = false },
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+                    ) { Text("收起", fontSize = 12.sp) }
                 }
             }
         }
+    }
+}
+
+/**
+ * 今日卡片里的一行：时间 + 时间轴 + 课程信息。
+ *
+ * ## `Modifier.height(IntrinsicSize.Min)` 是干什么的
+ *
+ * 时间轴上那条虚线要"和这一行一样高"，就需要 `fillMaxHeight()`。
+ * 但 Row 的高度默认由子元素撑开，形成循环依赖——
+ * `IntrinsicSize.Min` 让 Row **先量测一遍子元素的最小固有高度**，
+ * 再把这个确定的高度给所有子元素，`fillMaxHeight()` 才有意义。
+ *
+ * 如果没有这行，`fillMaxHeight()` 在高度未定的父容器里会被忽略，
+ * 虚线高度变成 0，界面上什么都看不到——典型的"代码没错但画不出来"。
+ *
+ * @param isLast 最后一行不画虚线，避免线下端悬在卡片底部。
+ */
+@Composable
+private fun TodayRow(entry: TodayEntry, isLast: Boolean) {
+    val accent = CoursePalette.colorOf(entry.course.colorIndex)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+    ) {
+        /**
+         * 左侧时间列。宽度写死 46dp 是为了**让所有行的课程名左边缘对齐**：
+         * 时间字符串长度固定（[TimeUtils.minutesToText] 一定补零成 `08:00`），
+         * 所以这里不会出现列宽跳动。
+         *
+         * `top = 7.dp` 是让它和右边课程名的首行视觉对齐——
+         * 时间字号 15sp、课程名也是 15sp，但右边多了 3dp 的上内边距。
+         */
+        Text(
+            text = TimeUtils.minutesToText(entry.startMinute),
+            modifier = Modifier.width(46.dp).padding(top = 6.dp),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        TimelineRail(
+            dotColor = accent,
+            drawLine = !isLast,
+            modifier = Modifier.fillMaxHeight().width(16.dp)
+        )
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 8.dp, top = 4.dp, bottom = 14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = entry.course.name,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    // 长课名省略而不是换行：换行会让每行高度不一致，
+                    // 时间轴看起来就断断续续了。
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (entry.ongoing) {
+                    Box(
+                        Modifier
+                            .padding(start = 6.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    ) {
+                        Text("上课中", fontSize = 10.sp, color = MaterialTheme.colorScheme.onPrimary)
+                    }
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            /**
+             * 拼出"第 3~5 节 · 教室 · 教师"这一行。
+             *
+             * ## `listOfNotNull` 解决什么问题
+             *
+             * 教室和教师都可能为空。如果直接拼
+             * `"${room} · ${teacher} · 第 x-y 节"`，
+             * 没教室时会出现"` · 张三 · 第 1-2 节`"
+             * 这种以分隔符开头的难看结果。
+             *
+             * `listOfNotNull(a, b, c)` 会把 `null` 元素**直接丢掉**，
+             * 再用 `joinToString(" · ")` 拼起来，分隔符就不会多余。
+             * 所以这里的 `ifBlank { null }` 是刻意的——
+             * 把"空字符串"转成 `null` 好让 `listOfNotNull` 丢掉它。
+             *
+             * 节次区间永远非空，所以结果一定不会是空串。
+             */
+            val sections = if (entry.slot.startSection == entry.slot.endSection) {
+                "第 ${entry.slot.startSection} 节"
+            } else {
+                "第 ${entry.slot.startSection}~${entry.slot.endSection} 节"
+            }
+            val sub = listOfNotNull(
+                sections,
+                entry.room.ifBlank { null },
+                entry.course.teacher.ifBlank { null }
+            ).joinToString(" · ")
+            Text(
+                text = sub,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * 时间轴：一个小圆点 +（可选）一条往下延伸的虚线。
+ *
+ * ## 为什么用 `Canvas` 而不是放一个 1dp 的 `Box`
+ *
+ * 虚线画不出来。Compose 的 `Modifier.background()` 只能填纯色，
+ * 要虚线必须拿到**画笔**去设 `PathEffect.dashPathEffect(...)`，
+ * 而画笔只在 `DrawScope` 里才有——`Canvas` 就是拿到 `DrawScope` 的入口。
+ *
+ * 顺带一提：`4.dp.toPx()` 里的 `toPx()` 只有 `DrawScope` 里能用，
+ * 因为它依赖当前的屏幕密度；在普通代码里得用 `LocalDensity.current` 换算。
+ *
+ * @param dotColor 圆点颜色，取课程自己的配色——这样今日卡片和下面课格的颜色对得上。
+ * @param drawLine 最后一行传 false，不画下半段。
+ */
+@Composable
+private fun TimelineRail(dotColor: Color, drawLine: Boolean, modifier: Modifier = Modifier) {
+    /**
+     * 线的颜色用 `onSurfaceVariant` 压到 30% 透明度，而不是写死灰色：
+     * 深色模式下浅灰线会显得刺眼，跟着主题走才两套都成立。
+     */
+    val lineColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    Canvas(modifier) {
+        val cx = size.width / 2
+        val dotRadius = 3.5.dp.toPx()
+        // 圆点下移到与课程名首行居中：行内约 4dp 上内边距 + 8sp 半行高
+        val dotY = 10.dp.toPx()
+        if (drawLine) {
+            drawLine(
+                color = lineColor,
+                start = Offset(cx, dotY + dotRadius + 2.dp.toPx()),
+                end = Offset(cx, size.height),
+                strokeWidth = 1.5.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(
+                    intervals = floatArrayOf(4.dp.toPx(), 4.dp.toPx())
+                )
+            )
+        }
+        drawCircle(color = dotColor, radius = dotRadius, center = Offset(cx, dotY))
     }
 }
 
