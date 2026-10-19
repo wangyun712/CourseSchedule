@@ -1,10 +1,13 @@
 package com.courseschedule.feature.settings
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.courseschedule.core.TimeUtils
 import com.courseschedule.core.WeekCalculator
 import com.courseschedule.data.ScheduleRepository
+import com.courseschedule.data.backup.BackupException
+import com.courseschedule.data.backup.BackupManager
 import com.courseschedule.data.entity.PeriodTime
 import com.courseschedule.data.entity.Semester
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,6 +92,9 @@ data class PeriodDraft(val section: Int, val startText: String, val endText: Str
  *     否则每次重组都会再弹一次。适合"保存成功"这种瞬时反馈。
  *
  *   所以 `message` 必须配套 [SettingsViewModel.consumeMessage] 使用。
+ * @property backupBusy 是否正在导出/恢复备份。
+ *   期间禁用两个按钮——重复点会同时跑两个读写同一文件的协程，
+ *   第二个多半以"文件被占用"失败，用户看到的是莫名其妙的报错。
  */
 data class SettingsUiState(
     val loading: Boolean = true,
@@ -103,7 +109,8 @@ data class SettingsUiState(
     val courseCount: Int = 0,
     val noteCount: Int = 0,
     val todoCount: Int = 0,
-    val message: String? = null
+    val message: String? = null,
+    val backupBusy: Boolean = false
 )
 
 /**
@@ -129,8 +136,13 @@ data class SettingsUiState(
  * "订阅这个计数，变了就更新状态里对应的那个字段"。
  *
  * @param repository 数据来源。
+ * @param backupManager 备份读写。**不放进 Repository**，
+ *   因为它要 `ContentResolver`，而 Repository 刻意不碰 Android API。
  */
-class SettingsViewModel(private val repository: ScheduleRepository) : ViewModel() {
+class SettingsViewModel(
+    private val repository: ScheduleRepository,
+    private val backupManager: BackupManager
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -549,6 +561,76 @@ class SettingsViewModel(private val repository: ScheduleRepository) : ViewModel(
              */
             showMessage("已保存")
         }
+    }
+
+    /**
+     * 导出备份到用户选定的 [uri]（由界面的文件选择器给）。
+     *
+     * ## 为什么这里是 `Uri` 而不是文件路径
+     *
+     * 走的是 SAF（系统文件选择器），用户可能存到本地、OneDrive、微信收藏。
+     * 这些位置**没有真实文件路径可给**，只有一个 `Uri` 授权凭证。
+     * 好处是 app 不需要任何存储权限。
+     *
+     * ## 出错为什么不抛异常
+     *
+     * ViewModel 里抛异常没人接，app 会直接崩。所以这里把每一种失败
+     * 翻译成一句人话塞进 [SettingsUiState.message]，由界面弹出来。
+     */
+    fun exportBackup(uri: Uri) {
+        if (_uiState.value.backupBusy) return
+        _uiState.update { it.copy(backupBusy = true) }
+        viewModelScope.launch {
+            val text = try {
+                val summary = backupManager.export(uri)
+                "已导出 ${summary.courses} 门课、${summary.slots} 个时段"
+            } catch (e: BackupException) {
+                backupErrorText(e)
+            } catch (e: Exception) {
+                // 兜底：SQLite 异常之类的意外情况，不能让 app 崩掉
+                "导出失败：${e.message ?: "未知错误"}"
+            }
+            _uiState.update { it.copy(backupBusy = false) }
+            showMessage(text)
+        }
+    }
+
+    /**
+     * 从 [uri] 恢复备份。**会覆盖当前全部数据**，界面上必须已经二次确认过。
+     *
+     * 成功后的提示带上条数，是为了让用户确认"导进来的就是我那份"——
+     * 如果他选错了文件（比如一份很旧的空备份），只说"成功"会让他以为数据都在。
+     */
+    fun importBackup(uri: Uri) {
+        if (_uiState.value.backupBusy) return
+        _uiState.update { it.copy(backupBusy = true) }
+        viewModelScope.launch {
+            val text = try {
+                val summary = backupManager.restore(uri)
+                "已恢复 ${summary.courses} 门课、${summary.slots} 个时段"
+            } catch (e: BackupException) {
+                backupErrorText(e)
+            } catch (e: Exception) {
+                "恢复失败：${e.message ?: "未知错误"}"
+            }
+            _uiState.update { it.copy(backupBusy = false) }
+            showMessage(text)
+        }
+    }
+
+    /**
+     * 把失败原因翻译成用户能看懂的话。
+     *
+     * 分类的价值就在这里：如果只抛 `Exception("失败")`，
+     * 用户不知道该换个文件、还是该升级 app、还是数据本身有问题。
+     */
+    private fun backupErrorText(e: BackupException): String = when (e.reason) {
+        BackupException.Reason.IO -> "文件读写失败，请重试"
+        BackupException.Reason.NOT_BACKUP -> "这不是课程表的备份文件"
+        BackupException.Reason.TOO_NEW -> "备份来自更新版本的 app，请先升级再恢复"
+        BackupException.Reason.TOO_LARGE -> "文件太大，不像是备份文件"
+        BackupException.Reason.CORRUPTED -> "备份文件已损坏，读不出来"
+        BackupException.Reason.INCONSISTENT -> "备份里的数据对不上（可能被改过），已取消导入"
     }
 
     /**

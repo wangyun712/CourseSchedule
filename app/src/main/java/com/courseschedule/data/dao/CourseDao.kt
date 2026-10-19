@@ -130,4 +130,32 @@ interface CourseDao {
      */
     @Query("SELECT COUNT(*) FROM course")
     fun observeCourseCount(): Flow<Int>
+
+    // ---------- 以下两个方法只服务恢复备份 ----------
+
+    /**
+     * 清空全部时间段。
+     *
+     * 恢复备份是整库替换，所以这里是全表删。**顺序很重要**：
+     * 先删 `course_slot`、再删 `course`、最后删 `semester`，
+     * 严格按"子表 → 父表"来，不依赖级联删除是否开启。
+     */
+    @Query("DELETE FROM course_slot")
+    suspend fun deleteAllSlots()
+
+    /** 清空全部课程。必须在 [deleteAllSlots] 之后调用。 */
+    @Query("DELETE FROM course")
+    suspend fun deleteAllCourses()
+
+    /**
+     * 一次性读出某学期的全部课程 + 时间段，**给导出备份用**。
+     *
+     * 和 [observeCourses] 的 SQL 一样，只是返回具体值而不是 Flow。
+     * 为什么不复用 Flow 再 `.first()`：导出跑在 `withTransaction` 里，
+     * 而 Flow 的查询走的是另一个执行器，在事务里混用两套调度器
+     * 属于自找麻烦（极端情况下会锁等待）。**同一个事务里只用 suspend 查询。**
+     */
+    @Transaction
+    @Query("SELECT * FROM course WHERE semesterId = :semesterId ORDER BY name")
+    suspend fun coursesWithSlotsOnce(semesterId: Long): List<CourseWithSlots>
 }

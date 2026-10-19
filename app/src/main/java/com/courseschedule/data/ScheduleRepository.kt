@@ -2,6 +2,7 @@ package com.courseschedule.data
 
 import androidx.room.withTransaction
 import com.courseschedule.core.WeekCalculator
+import com.courseschedule.data.backup.BackupPayload
 import com.courseschedule.data.entity.Course
 import com.courseschedule.data.entity.CourseSlot
 import com.courseschedule.data.entity.CourseWithSlots
@@ -283,6 +284,97 @@ class ScheduleRepository(private val db: AppDatabase) {
      * 那是唯一的保护。P2 的备份功能上线后，误删才有真正的兜底。
      */
     suspend fun deleteCourse(courseId: Long) = courseDao.deleteCourse(courseId)
+
+    // ---------- 备份 / 恢复 ----------
+
+    /**
+     * 把当前全部数据读成一个快照，供导出。[BackupManager] 调用。
+     *
+     * 整个读取包在一个事务里：**导出的必须是同一时刻的数据**。
+     * 不加事务的话，读到一半用户刚好加了门课，导出的文件里就会
+     * 出现"时间段的 courseId 指向一门还没写进文件的课"——
+     * 而这种文件在导入时会被校验拦下来，等于用户白导一次。
+     *
+     * @throws IllegalStateException 学期还没建出来。正常路径走不到
+     *   （两个 ViewModel 的 init 都会先 `ensureSemester()`），
+     *   但如果真发生了，宁可抛错也不要导出一个没有学期的空文件。
+     */
+    suspend fun exportBackup(): BackupPayload = db.withTransaction {
+        val semester = semesterDao.current()
+            ?: error("还没有学期，无法导出备份")
+
+        val withSlots = courseDao.coursesWithSlotsOnce(semester.id)
+        BackupPayload(
+            semester = semester,
+            courses = withSlots.map { it.course },
+            slots = withSlots.flatMap { it.slots },
+            periods = semesterDao.periodsOnce(semester.id),
+            notes = noteDao.getAll(),
+            todos = todoDao.getAll()
+        )
+    }
+
+    /**
+     * 用备份数据**整体替换**当前数据。
+     *
+     * ## 为什么是"清空再重建"而不是合并
+     *
+     * 合并要处理 id 冲突、同名课程、时段重复，是一大堆判断，
+     * 而且很难让用户理解合并后的结果。真实场景是"换手机 / 重装"，
+     * 覆盖就够，语义也清楚：**导入 = 回到导出那一刻**。
+     *
+     * ## 为什么要重编 id（而不是保留原 id）
+     *
+     * 清空之后原来的 id 都能用，保留也行。但重编更稳：
+     * 不依赖 `sqlite_sequence` 的状态，也不会和"万一没删干净"的残留撞车。
+     * 代价是课程 id 变了，所以要维护一张 `旧 id → 新 id` 的映射表，
+     * 时间段和待办的 `courseId` 都要跟着改。
+     *
+     * ## 删除顺序
+     *
+     * 严格按"子表 → 父表"：course_slot → course → period_time → semester。
+     * 不依赖 `ON DELETE CASCADE` 是否开启，也不依赖外键约束的开关状态。
+     *
+     * 整个方法是一个事务：中途任何一步失败都会全部回滚，
+     * 用户原来的数据一条不少。
+     */
+    suspend fun restoreBackup(payload: BackupPayload) = db.withTransaction {
+        courseDao.deleteAllSlots()
+        courseDao.deleteAllCourses()
+        semesterDao.deleteAllPeriods()
+        semesterDao.deleteAllSemesters()
+        noteDao.deleteAll()
+        todoDao.deleteAll()
+
+        val newSemesterId = semesterDao.insert(payload.semester.copy(id = 0L))
+
+        // 作息：section 按原样保留（文件里已经是连续的 1..N）
+        semesterDao.insertPeriods(
+            payload.periods.map { it.copy(id = 0L, semesterId = newSemesterId) }
+        )
+
+        // 课程：先建映射，再插时间段，否则时间段的 courseId 没有落点
+        val idMap = HashMap<Long, Long>(payload.courses.size)
+        payload.courses.forEach { course ->
+            val newId = courseDao.insertCourse(course.copy(id = 0L, semesterId = newSemesterId))
+            idMap[course.id] = newId
+        }
+        if (payload.slots.isNotEmpty()) {
+            courseDao.insertSlots(
+                payload.slots.map { it.copy(id = 0L, courseId = idMap.getValue(it.courseId)) }
+            )
+        }
+
+        if (payload.notes.isNotEmpty()) {
+            noteDao.insertAll(payload.notes.map { it.copy(id = 0L) })
+        }
+        if (payload.todos.isNotEmpty()) {
+            // courseId 是软关联，映射不到就置空——课程被删过，待办还要留着
+            todoDao.insertAll(
+                payload.todos.map { it.copy(id = 0L, courseId = it.courseId?.let(idMap::get)) }
+            )
+        }
+    }
 
     /**
      * 与数据库无关的常量。放在 `companion object` 里，

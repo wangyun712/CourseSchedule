@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.courseschedule.ui.HintText
 import com.courseschedule.ui.VerticalSpacer
-import com.courseschedule.ui.appRepository
+import com.courseschedule.ui.appContainer
 
 /**
  * # P3 / P4 的占位页
@@ -50,9 +50,9 @@ import com.courseschedule.ui.appRepository
  */
 @Composable
 fun PlaceholderScreen(title: String, description: String) {
-    // appRepository() 本身是 @Composable 函数（见 ui/VmFactory.kt），
+    // appContainer() 本身是 @Composable 函数（见 ui/VmFactory.kt），
     // 所以可以在 Composable 里直接调。取的是 Application 里那个唯一的实例。
-    val repository = appRepository()
+    val repository = appContainer().repository
 
     // collectAsStateWithLifecycle：把 Flow 变成 Compose 能用的 State。
     //

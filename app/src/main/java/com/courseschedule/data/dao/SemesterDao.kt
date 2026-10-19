@@ -143,4 +143,34 @@ interface SemesterDao {
      */
     @Query("DELETE FROM period_time WHERE semesterId = :semesterId")
     suspend fun deletePeriods(semesterId: Long)
+
+    // ---------- 以下两个方法只服务恢复备份 ----------
+
+    /**
+     * 清空全部作息，**不区分学期**。
+     *
+     * 恢复备份是"整库替换"，不是"改某一个学期"，所以这里不能用
+     * [deletePeriods]（它要 semesterId）。恢复流程里这两张表会被
+     * 彻底清空再重建，调用顺序见 [com.courseschedule.data.ScheduleRepository.restoreBackup]。
+     */
+    @Query("DELETE FROM period_time")
+    suspend fun deleteAllPeriods()
+
+    /**
+     * 清空学期表。
+     *
+     * ⚠️ 必须在 [CourseDao.deleteAllCourses] **之后**调用：
+     * `course` / `period_time` 对 `semester` 有外键约束，
+     * 先删父行会触发级联，但显式按"子 → 父"的顺序删更可控，
+     * 也不依赖 Room 有没有打开 `PRAGMA foreign_keys`。
+     */
+    @Query("DELETE FROM semester")
+    suspend fun deleteAllSemesters()
+
+    /**
+     * 一次性读出某学期的作息，**给导出备份用**。
+     * 不用 [observePeriods] 的理由同 [CourseDao.coursesWithSlotsOnce]。
+     */
+    @Query("SELECT * FROM period_time WHERE semesterId = :semesterId ORDER BY section")
+    suspend fun periodsOnce(semesterId: Long): List<PeriodTime>
 }

@@ -48,6 +48,26 @@ interface NoteDao {
      */
     @Insert
     suspend fun insert(note: Note): Long
+
+    // ---------- 以下三个方法只服务备份/恢复 ----------
+
+    /**
+     * 读出全部便签，**给导出用**。
+     *
+     * 不加 `ORDER BY`：导出的是数据快照，顺序由 JSON 数组本身承载，
+     * 导入时也不会依赖顺序。真正需要排序的是列表界面（P3），
+     * 那是另一条查询，不要为了复用把排序硬塞进这里。
+     */
+    @Query("SELECT * FROM note")
+    suspend fun getAll(): List<Note>
+
+    /** 清空便签表。**只在恢复备份的事务里调用**，别的地方调用它等于删库。 */
+    @Query("DELETE FROM note")
+    suspend fun deleteAll()
+
+    /** 批量插入。恢复时用，Room 会在一个事务里循环插入。 */
+    @Insert
+    suspend fun insertAll(notes: List<Note>)
 }
 
 /**
@@ -76,4 +96,18 @@ interface TodoDao {
      */
     @Insert
     suspend fun insert(todo: Todo): Long
+
+    // ---------- 以下三个方法只服务备份/恢复 ----------
+
+    /** 读出全部待办，给导出用。排序理由同 [NoteDao.getAll]。 */
+    @Query("SELECT * FROM todo")
+    suspend fun getAll(): List<Todo>
+
+    /** 清空待办表。只在恢复备份的事务里调用。 */
+    @Query("DELETE FROM todo")
+    suspend fun deleteAll()
+
+    /** 批量插入。恢复时用。 */
+    @Insert
+    suspend fun insertAll(todos: List<Todo>)
 }

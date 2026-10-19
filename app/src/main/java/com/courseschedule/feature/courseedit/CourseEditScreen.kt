@@ -82,7 +82,7 @@ fun CourseEditScreen(
      * 这也是为什么 [com.courseschedule.MainActivity] 里
      * 编辑路由带上了 `courseId` 作为路径参数。
      */
-    val viewModel = appViewModel { CourseEditViewModel(it, courseId, presetDay, presetSection) }
+    val viewModel = appViewModel { CourseEditViewModel(it.repository, courseId, presetDay, presetSection) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     /**

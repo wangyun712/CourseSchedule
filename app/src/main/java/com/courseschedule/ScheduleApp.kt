@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.room.Room
 import com.courseschedule.data.AppDatabase
 import com.courseschedule.data.ScheduleRepository
+import com.courseschedule.data.backup.BackupManager
 
 /**
  * # Application：进程级的"单例容器"
@@ -100,4 +101,17 @@ class AppContainer(context: Context) {
      * 一个实例全局够用，不需要每次新建。
      */
     val repository: ScheduleRepository = ScheduleRepository(database)
+
+    /**
+     * 备份读写器。
+     *
+     * 它需要 `ContentResolver` 才能走系统文件选择器读写文件——
+     * 这件事**刻意不放 Repository 里**：Repository 的注释里写了
+     * "不需要 Android 的任何东西"，一旦让它碰 ContentResolver，
+     * 那层就被污染了，以后想给数据层写纯 JVM 测试也做不到了。
+     *
+     * `context` 在这里是 Application（见类注释的泄漏警告），
+     * `contentResolver` 跟着它的生命周期，安全。
+     */
+    val backupManager: BackupManager = BackupManager(repository, context.contentResolver)
 }

@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     // AGP 9 起自带 Kotlin 支持，不再需要 org.jetbrains.kotlin.android
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
 }
 
@@ -63,6 +64,9 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+
+    // 备份文件的 JSON 读写（P2a）。只在导出/导入时用，不参与界面渲染。
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
 

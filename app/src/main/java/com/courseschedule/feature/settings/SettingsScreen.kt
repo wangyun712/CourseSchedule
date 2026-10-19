@@ -1,6 +1,9 @@
 package com.courseschedule.feature.settings
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +48,7 @@ import com.courseschedule.ui.SectionTitle
 import com.courseschedule.ui.TimePickerDialogM3
 import com.courseschedule.ui.VerticalSpacer
 import com.courseschedule.ui.appViewModel
+import java.time.LocalDate
 
 /**
  * 设置页：学期信息 + 节次作息 + 数据概览。
@@ -65,7 +70,7 @@ import com.courseschedule.ui.appViewModel
  */
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
-    val viewModel = appViewModel { SettingsViewModel(it) }
+    val viewModel = appViewModel { SettingsViewModel(it.repository, it.backupManager) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     /**
@@ -122,6 +127,47 @@ fun SettingsScreen(onBack: () -> Unit) {
      * 因为初始值是 `null`，不加泛型编译器推不出 `Pair` 那部分类型。
      */
     var timePickerTarget by remember { mutableStateOf<Pair<Int, Boolean>?>(null) }
+
+    /**
+     * 选中了、但**还没确认**的备份文件。
+     *
+     * ## 为什么恢复要分两步（选文件 → 确认）
+     *
+     * 恢复是覆盖式的，且不可撤销。如果选完文件直接开始导，
+     * 用户点错一次就没了。中间插一个确认框，并且**把文件名和条数写进去**，
+     * 是为了让用户能核对"我选的是那份吗"。
+     *
+     * 这个状态也留在界面里（不进 ViewModel）：它是纯粹的交互中间态，
+     * 进程被杀之后重置成"没有待确认文件"是正确的。
+     */
+    var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
+
+    /**
+     * 导出：`CreateDocument("application/json")` 会拉起系统的"保存到"面板。
+     *
+     * 参数是**建议文件名**，用户可以改。带日期是为了同一个目录里
+     * 多次导出不会互相覆盖——"课程表备份-2026-10-19.json"。
+     */
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        // uri 为 null 表示用户取消了，什么都不做
+        if (uri != null) viewModel.exportBackup(uri)
+    }
+
+    /**
+     * 恢复的第一步：选文件。
+     *
+     * MIME 不限定类型（传通配符）而不是 `application/json`：很多文件管理器（尤其是网盘）
+     * 把 `.json` 报成 `application/octet-stream` 甚至 `text/plain`，
+     * 限死 MIME 会让用户"文件在那里却选不了"。真正的类型校验交给
+     * `BackupCodec` —— 它读不懂的文件会给一句人话。
+     */
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) pendingRestoreUri = uri
+    }
 
     /**
      * 把 ViewModel 的 `message` 弹成 Toast。
@@ -458,7 +504,45 @@ fun SettingsScreen(onBack: () -> Unit) {
                      * 一个课程表 app 让用户重填一整学期 20 门课的时间，
                      * 是很难接受的体验。
                      */
-                    HintText("所有数据只存在这台手机上（Room 数据库），app 没有申请联网权限。卸载会清空数据，请在 P2 的备份功能上线后定期导出。")
+                    HintText("所有数据只存在这台手机上（Room 数据库），app 没有申请联网权限。卸载会清空数据，请定期导出备份。")
+
+                    VerticalSpacer(10)
+
+                    /**
+                     * 备份的两个入口。
+                     *
+                     * 都用 `OutlinedButton` 而不是实心按钮：这一页的主操作是底部的
+                     * "保存"，备份是低频操作，视觉层级要低一档。
+                     *
+                     * `enabled = !state.backupBusy`：导入导出期间禁用，
+                     * 防止重复点击同时跑两个协程读写同一份数据。
+                     */
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val today = TimeUtils.epochDayToText(LocalDate.now().toEpochDay())
+                                exportLauncher.launch("课程表备份-$today.json")
+                            },
+                            enabled = !state.backupBusy,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("导出备份", fontSize = 13.sp) }
+
+                        OutlinedButton(
+                            onClick = {
+                                // "*/*" 的理由见 restoreLauncher 的注释
+                                restoreLauncher.launch(arrayOf("*/*"))
+                            },
+                            enabled = !state.backupBusy,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("从备份恢复", fontSize = 13.sp) }
+                    }
+                    if (state.backupBusy) {
+                        VerticalSpacer(6)
+                        HintText("正在处理备份文件…")
+                    }
                 }
             }
 
@@ -506,6 +590,45 @@ fun SettingsScreen(onBack: () -> Unit) {
                  * **同步操作随便什么顺序，异步操作要按"用户看到什么"来定顺序。**
                  */
                 showDatePicker = false
+            }
+        )
+    }
+
+    /**
+     * 恢复确认弹窗。**这是"覆盖式导入"唯一的一道闸门。**
+     *
+     * 弹窗里刻意写清三件事：文件名（我选的是这份吗）、
+     * 当前有多少数据会被替换（损失有多大）、不能撤销。
+     *
+     * 确认按钮用 `colorScheme.error`：这是个破坏性操作，
+     * 用红色区分于普通的"确定"，是 Material 的约定。
+     */
+    pendingRestoreUri?.let { uri ->
+        val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "所选文件"
+        AlertDialog(
+            onDismissRequest = { pendingRestoreUri = null },
+            title = { Text("用备份覆盖当前数据？") },
+            text = {
+                Text(
+                    "文件：$fileName\n\n" +
+                        "当前的 ${state.courseCount} 门课程、${state.noteCount} 条便签、" +
+                        "${state.todoCount} 条待办会被全部替换，且不能撤销。",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        // 先关弹窗再启动导入：导入是异步的，弹窗留着会挡住结果提示
+                        pendingRestoreUri = null
+                        viewModel.importBackup(uri)
+                    }
+                ) {
+                    Text("覆盖导入", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestoreUri = null }) { Text("取消") }
             }
         )
     }

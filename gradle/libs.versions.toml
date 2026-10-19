@@ -9,6 +9,9 @@ activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 navigationCompose = "2.10.2"
 room = "2.8.5"
+# 备份文件的 JSON 序列化。选它而不是 Gson/Moshi：编译期生成、无反射，
+# 而且能在 JVM 单测里直接跑——备份格式是最需要有测试的地方。
+kotlinxSerialization = "1.11.0"
 junit = "4.13.2"
 
 [libraries]
@@ -25,10 +28,13 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 # 注意：AGP 9 起 Kotlin 支持内置，不需要 org.jetbrains.kotlin.android
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# 序列化编译器插件必须和 Kotlin 版本严格一致，所以共用 kotlin 这个 ref
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

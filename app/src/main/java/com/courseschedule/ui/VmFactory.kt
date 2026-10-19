@@ -6,11 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.courseschedule.AppContainer
 import com.courseschedule.ScheduleApp
-import com.courseschedule.data.ScheduleRepository
 
 /**
- * # 手写依赖注入：从 Application 里取 Repository
+ * # 手写依赖注入：从 Application 里取依赖容器
  *
  * ## 为什么不上 Hilt / Koin
  *
@@ -18,6 +18,18 @@ import com.courseschedule.data.ScheduleRepository
  * 注解处理器（kapt/KSP）+ 代码生成 + 构建变慢，收益为负。
  * 手动传参在这个规模下更直白：想知道 ViewModel 依赖什么，看构造函数一眼就够，
  * 不用去追 `@Inject` 和 `@Module`。等依赖多到手动传不下去再换也不迟。
+ *
+ * ## 为什么传的是 AppContainer 而不是 Repository
+ *
+ * 最早这里只传 `ScheduleRepository`，因为所有 ViewModel 都只需要它。
+ * 加备份功能之后，设置页的 ViewModel 还需要 [BackupManager]（它要
+ * `ContentResolver` 才能读写文件，而 Repository 刻意不碰 Android API）。
+ *
+ * 于是有两个选择：再加一个参数、或者直接把容器传进去。
+ * 选后者——**容器的意义就是"ViewModel 能拿到什么"**，
+ * 每加一个依赖就改一次工厂签名，那这层封装等于白做。
+ * 代价是 ViewModel 理论上能碰到容器里的一切，但这个容器只有 3 个成员，
+ * 影响可以忽略。
  *
  * ## 为什么这是个 `@Composable` 函数
  *
@@ -28,7 +40,7 @@ import com.courseschedule.data.ScheduleRepository
  * 返回值是个普通对象，直接 return 没有任何问题。
  */
 @Composable
-fun appRepository(): ScheduleRepository {
+fun appContainer(): AppContainer {
     // LocalContext.current 是 CompositionLocal 的写法，读的是"当前最近的 Context"。
     //
     // ⚠️ 内存泄漏陷阱：这个 Context 在某些场景下是 Activity 级别的
@@ -45,15 +57,15 @@ fun appRepository(): ScheduleRepository {
     // 那里声明了 application 用 ScheduleApp，所以运行期必定是这个类型。
     // 如果 Manifest 里漏了 `android:name`，这行会抛 ClassCastException——
     // 这是本项目最容易返工的地方，改 Manifest 时务必检查。
-    return (context.applicationContext as ScheduleApp).container.repository
+    return (context.applicationContext as ScheduleApp).container
 }
 
 /**
- * # 用 Repository 造 ViewModel 的通用工厂
+ * # 用依赖容器造 ViewModel 的通用工厂
  *
  * 调用长这样：
  * ```
- * val vm = appViewModel { repo -> ScheduleViewModel(repo) }
+ * val vm = appViewModel { ScheduleViewModel(it.repository) }
  * ```
  *
  * ## 为什么 ViewModel 的构造函数里可以写 Repository
@@ -70,7 +82,7 @@ fun appRepository(): ScheduleRepository {
  * 才能让 `VM` 在运行时可用。
  *
  * 代价：inline 函数体会被复制到每个调用点，编译后体积略大。
- * 这个函数只有 3 行，不值一提。
+ * 这个函数只有几行，不值一提。
  *
  * ## `crossinline` 是什么
  *
@@ -98,12 +110,12 @@ fun appRepository(): ScheduleRepository {
  */
 @Composable
 inline fun <reified VM : ViewModel> appViewModel(
-    crossinline create: (ScheduleRepository) -> VM
+    crossinline create: (AppContainer) -> VM
 ): VM {
     // 每次重组都会执行到这里，但下面 viewModel() 内部有缓存，
     // 同一个 ViewModelStoreOwner + 同一个类型只会真正调用一次 factory。
-    // 所以这里重复读 repository 是无害的（它本身也就是取个引用）。
-    val repository = appRepository()
+    // 所以这里重复读容器是无害的（它本身也就是取个引用）。
+    val container = appContainer()
 
     return viewModel(
         // viewModelFactory {} 是官方提供的 DSL，比手写 ViewModelProvider.Factory
@@ -111,7 +123,7 @@ inline fun <reified VM : ViewModel> appViewModel(
         factory = viewModelFactory {
             // initializer 的 lambda 参数是 CreationExtras，我们不需要，
             // 所以用 `initializer {` 忽略掉它。
-            initializer { create(repository) }
+            initializer { create(container) }
         }
     )
 }
