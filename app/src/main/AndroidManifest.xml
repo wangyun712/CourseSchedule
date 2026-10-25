@@ -1,12 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 刻意不申请 INTERNET 权限：从架构上保证"不联网"，系统层面无法发起网络请求 -->
+    <!--
+        刻意不申请 INTERNET 权限：从架构上保证"不联网"，系统层面无法发起网络请求。
+        本 app 自己不声明任何权限；合并清单里唯一一条
+        DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION 是 androidx.core 自动注入的
+        signature 级私有权限，不涉及用户数据、安装时也不会提示。
+    -->
 
+    <!--
+        allowBackup="false" 也是刻意的。
+        开着的话，系统「自动备份」会把数据库上传到用户的云账号（Google Drive 等），
+        这和 app 里写明的「数据只存在这台手机上」直接矛盾——虽然 app 自己没有联网权限，
+        但系统服务有。备份改由「设置 → 数据 → 导出备份」手动完成，文件去哪由用户决定。
+    -->
     <application
         android:name=".ScheduleApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.CourseSchedule">

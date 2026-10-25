@@ -1,24 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    启动图标前景层：一张"课表格子"卡片。
+
+    自适应图标（adaptive icon）的画布是 108×108，但系统只会保留中间约 72×72
+    的区域（不同启动器的裁切形状不一样：圆形、方形、squircle…），
+    所以图案必须画在中心 30~78 这个范围里，否则圆角屏上会被切掉边。
+
+    画法说明：
+    - 先用 clip-path 裁出一个圆角矩形，再往里面填色块。
+      这样顶部色带和格子都会自动被圆角裁掉，不用为每个色块单独算圆角。
+    - 颜色和 app 主色一致（#185FA5），背景层见 values/colors.xml。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,32h16v16h-16z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M58,32h16v16h-16z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,56h16v20h-16z" />
-    <path
-        android:fillColor="#B5D4F4"
-        android:pathData="M58,56h16v20h-16z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,27h40v6h-40z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,78h40v3h-40z" />
+
+    <group>
+        <!-- 圆角卡片外轮廓，圆角半径 7 -->
+        <clip-path android:pathData="M37,26 H71 A7,7 0 0 1 78,33 V75 A7,7 0 0 1 71,82 H37 A7,7 0 0 1 30,75 V33 A7,7 0 0 1 37,26 Z" />
+
+        <!-- 卡片底色 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,26 h48 v56 h-48 z" />
+
+        <!-- 顶部色带（"表头"那一行） -->
+        <path
+            android:fillColor="#B5D4F4"
+            android:pathData="M30,26 h48 v13 h-48 z" />
+
+        <!-- 2×2 的课程格子，深浅交错 -->
+        <path
+            android:fillColor="#185FA5"
+            android:pathData="M37,46 h12 v11 h-12 z" />
+        <path
+            android:fillColor="#185FA5"
+            android:pathData="M55,46 h12 v11 h-12 z" />
+        <path
+            android:fillColor="#4A90C9"
+            android:pathData="M37,63 h12 v11 h-12 z" />
+        <path
+            android:fillColor="#185FA5"
+            android:pathData="M55,63 h12 v11 h-12 z" />
+    </group>
 </vector>

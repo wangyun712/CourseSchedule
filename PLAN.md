@@ -1,7 +1,8 @@
 # CourseSchedule 开工计划
 
-> 版本 v1.1 · 2026-10-19 · 基线提交 `20c9716`
+> 版本 v1.2 · 2026-10-21 · 基线提交 `c8e59a3`
 > **v1.1 变更**：取消「上课提醒 / 闹钟 / 通知」整个方向。改为在 app 内把当天课程置顶展示（已完成）。原 M2 删除，后续里程碑前移一位。
+> **v1.2 状态**：M1–M4 全部完成（备份恢复、便签、待办、收尾）。本文件转为**决策记录**保留，后续新需求另起一节追加。
 
 ---
 
@@ -26,11 +27,12 @@
 | 设置 | 完成 | 学期名称 / 开学日期 / 总周数 / 手动周次 / 节次作息 / 数据统计 |
 | 数据库 | 完成 | 6 张表，`version = 1`，schema 已导出到 `app/schemas/` |
 | 今日课程卡 | 完成（本次） | 置顶、不随课格滚动；日期条 + 时间轴；默认折叠 3 节 |
-| 备份 / 恢复 | 未开始 | — |
-| 便签 / 待办 | 占位 | `PlaceholderScreen.kt`，`NoteDao`/`TodoDao` 只有 `observeCount` + `insert` |
+| 备份 / 恢复 | 完成 | `data/backup/`；设置页导出/恢复，覆盖式导入，11 个编解码单测 |
+| 便签 / 待办 | 完成 | `feature/note/`、`feature/todo/`；便签自动保存（600 ms 防抖 + 退出刷盘） |
+| 收尾 | 完成 | 空课表引导、自适应图标、关于区、release 签名（`keystore.properties`，缺失时退回 debug 签名） |
 | 版本管理 | 完成 | GitHub `wangyun712/CourseSchedule`，`main` 干净 |
 
-技术栈：Kotlin + Compose + Room，AGP 9.4.1 / compileSdk 37 / minSdk 26，23 个 `.kt` 文件约 7000 行。
+技术栈：Kotlin + Compose + Room，AGP 9.4.1 / compileSdk 37 / minSdk 26，33 个 `.kt` 文件约 1 万行（含注释）。
 
 ---
 
@@ -89,7 +91,6 @@
 ```json
 {
   "schemaVersion": 1,
-  "appVersion": "0.1.0",
   "exportedAt": 1760000000000,
   "semester": { ... },
   "courses": [ ... ],

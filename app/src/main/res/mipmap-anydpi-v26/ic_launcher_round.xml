@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 圆形启动器（部分第三方启动器）单独取这个资源。
+     内容和方形版完全一样：自适应图标由系统决定裁切形状，
+     两个文件都写只是为了兼容只认 roundIcon 的启动器。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
