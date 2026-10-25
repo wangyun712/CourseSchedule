@@ -12,26 +12,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.SerializationException
 
 /**
- * # 备份文件（JSON）的格式定义
- *
- * ## 为什么另写一套 DTO，而不是给实体类加 `@Serializable`
- *
- * 因为**备份格式和数据库结构是两件事，必须能独立演进**。
- *
- * 如果直接序列化 [Semester] 这些实体：
- * - 以后给 `Course` 加一个字段，老备份文件立刻读不了（缺字段）；
- * - 想把字段改个名，等于同时改了数据库列名和文件格式；
- * - 实体上的 @Entity 注解和 @Serializable 混在一起，谁都看不清哪个是为了谁。
- *
- * 写成 DTO 之后，数据库怎么变都行，只要 [SemesterDto.toEntity] 还能把字段对上，
- * 老文件就一直能读。代价是多写几十行赋值代码——这几十行换来的是
- * **用户手里的备份文件不会因为一次 schema 变更而报废**，非常划算。
- *
- * ## 字段全部给了默认值
- *
- * 这样 `schemaVersion` 小的老文件（缺字段）也能反序列化成功，
- * 缺的部分落到默认值上。这是 JSON 备份格式的基本容错：**读的时候宽松**，
- * 校验的时候严格（见 [BackupCodec.decode]）。
+ * 备份文件（JSON）的格式定义。
+ * DTO 与数据库实体分离：备份格式要能独立于 schema 演进，实体加字段、改名都不影响老备份文件的读取。
+ * 字段全给默认值：缺字段的老文件也能反序列化（读宽松），数据对错交给校验把关（校验严格，见 `BackupCodec.decode`）。
  */
 
 /** 当前 app 能写出的最高格式版本。读到更高的版本 = 这份文件来自更新的 app。 */
@@ -67,8 +50,8 @@ data class SlotDto(
     val startWeek: Int = 1,
     val endWeek: Int = 20,
     /**
-     * 单双周。**存 [WeekType.value] 的数字而不是枚举名**，理由和数据库那边一样：
-     * 数字不会因为枚举改名而失效。0 每周 / 1 单周 / 2 双周。
+     * 单双周。存 `WeekType.value` 的数字而不是枚举名，理由和数据库那边一样：数字不因枚举改名而失效。
+     * 0 每周 / 1 单周 / 2 双周。
      */
     val weekType: Int = 0,
     val roomOverride: String = ""
@@ -106,17 +89,10 @@ data class TodoDto(
 )
 
 /**
- * 一个备份文件的**根节点**。
- *
- * @property schemaVersion 格式版本。读到比自己大的值必须拒绝——
- *   那份文件里可能有本版本不认识的字段，硬读会静默丢数据。
- * @property exportedAt 导出时间，epochMillis。给人看的（"这是我上周导的"），
- *   程序逻辑不依赖它。
- * @property semester 学期。**必填**，没有学期的备份没有任何意义。
- * @property courses / slots / periods 课程相关三张表。
- * @property notes / todos 现在是空数组，但**格式里必须有**：
- *   等 P3/P4 做出界面后，用户手里只有这一版导出的文件，
- *   那时候再加字段，老文件就缺表了。
+ * 备份文件的根节点；`semester` 必填，没有学期的备份没有任何意义。
+ * @property schemaVersion 格式版本，高于当前版本必须直接拒绝——文件里可能有本版本不认识的字段，硬读会静默丢数据。
+ * @property exportedAt 导出时间（epochMillis），给人看，程序逻辑不依赖。
+ * @property notes / todos 现在恒为空，但字段从第一版就进格式：以后加内容时，老备份文件不会缺字段。
  */
 @Serializable
 data class BackupFile(
@@ -131,11 +107,8 @@ data class BackupFile(
 )
 
 /**
- * 备份的**内存形态**：直接是数据库实体。
- *
- * 这一层夹在"JSON DTO"和"Repository 的写库方法"之间。
- * Repository 只认实体（它不该知道 JSON 长什么样），
- * 编解码只认 DTO（它不该知道 Room 长什么样），这个类就是两者的接缝。
+ * 备份的内存形态，直接是数据库实体。
+ * 夹在 JSON DTO 与 Repository 写库方法之间的接缝：Repository 只认实体，编解码只认 DTO。
  */
 data class BackupPayload(
     val semester: Semester,
@@ -147,10 +120,7 @@ data class BackupPayload(
 )
 
 /**
- * 备份失败的原因。**分类的意义是能给用户一句有用的话**。
- *
- * 笼统的"导入失败"没有任何帮助——用户不知道是该换个文件、
- * 还是该升级 app、还是数据本身坏了。
+ * 备份失败的原因分类，意义是能给用户一句有用的话，而不是笼统的"导入失败"。
  */
 class BackupException(
     val reason: Reason,
@@ -180,24 +150,15 @@ class BackupException(
 }
 
 /**
- * JSON 编解码。**纯 Kotlin，不碰 Android API**——所以能直接在 JVM 单测里跑。
- *
- * 这是本项目第一个有单元测试的数据层逻辑（见 `BackupCodecTest`）。
- * 备份是最不能出错的功能：它出错的表现是"用户以为有备份，其实导不回来"，
- * 而那时候原始数据往往已经没了。
+ * JSON 编解码，纯 Kotlin 不碰 Android API，可直接在 JVM 单测里跑（见 `BackupCodecTest`）。
+ * 备份是最不能出错的功能：出错的表现是"用户以为有备份，其实导不回来"，而那时原始数据往往已经没了。
  */
 object BackupCodec {
 
     /**
-     * `prettyPrint`：备份文件可能被用户用文本编辑器打开看，
-     * 缩进过的 JSON 至少是能读的。体积代价在一个本地文件上无所谓。
-     *
-     * `ignoreUnknownKeys`：老版本 app 读到新版本文件里多出来的字段时，
-     * 忽略而不是报错。真正该拒绝的情况由 [BackupFile.schemaVersion] 判断，
-     * 不靠"有没有未知字段"来判断——那样太脆。
-     *
-     * `encodeDefaults`：把 `teacher = ""` 这种默认值也写出来。
-     * 不写的话文件更小，但用户看的时候会疑惑"这门课的教师字段去哪了"。
+     * `prettyPrint`：备份文件可能被用户用编辑器打开，缩进过的 JSON 至少可读。
+     * `encodeDefaults`：默认值也写出，避免用户看文件时疑惑"字段去哪了"。
+     * `ignoreUnknownKeys`：未知字段忽略而非报错，这是"读宽松"；该拒绝的情况靠 `schemaVersion` 版本号判断，不靠未知字段。
      */
     private val json = Json {
         prettyPrint = true
@@ -208,14 +169,9 @@ object BackupCodec {
     fun encode(payload: BackupPayload): String = json.encodeToString(payload.toFile())
 
     /**
-     * 解析并校验。
-     *
-     * 顺序是刻意的：**先反序列化（能不能读），再查版本（该不该读），最后查关系（读出来的对不对）**。
-     * 版本检查放在反序列化之后，是因为 `schemaVersion` 本身就是文件里的一个字段，
-     * 必须先读出来才知道。
-     *
-     * @throws BackupException 所有失败都走这一个异常类型，
-     *   调用方按 [BackupException.reason] 决定提示文案。
+     * 解析并校验。顺序是刻意的：先反序列化（能不能读）→再查版本（该不该读）→最后查关系（读出来的对不对）。
+     * 版本检查放在反序列化之后：`schemaVersion` 本身就是文件里的一个字段，必须先读出来才能比。
+     * 所有失败都抛 `BackupException`，调用方按 `reason` 决定提示文案。
      */
     fun decode(text: String): BackupPayload {
         val cleaned = text.removePrefix("\uFEFF").trim()
@@ -242,17 +198,21 @@ object BackupCodec {
     }
 
     /**
-     * 关系校验。**这一步不能省。**
-     *
-     * 反序列化只保证"能解析成对象"，不保证"这些对象之间讲得通"。
-     * 一个手改过的、或者被别的程序生成的文件，完全可能通过 JSON 解析，
-     * 但里面的时间段指向不存在的课程。导进去的表现是：
-     * 课程列表里有 5 门课，课表上一格都没有——用户会以为数据丢了。
-     *
-     * 与其导进去变成这种状态，不如在门口就拒绝。
+     * 关系校验，这一步不能省：反序列化只保证"能解析成对象"，不保证对象之间讲得通。
+     * 手改或外部生成的文件可能解析通过，但时间段指向不存在的课程——导进去会让课表"有课但显示不出来"。
+     * 与其导入后变成这种状态，不如在门口就拒绝。
      */
     private fun validate(file: BackupFile) {
         fun reject(): Nothing = throw BackupException(BackupException.Reason.INCONSISTENT)
+
+        // 学期合法性：app 自身写入口（设置页校验 + ensureSemester）保证 totalWeeks >= 1、
+        // 周次落在 1..totalWeeks、名称非空，越界的一定是坏文件。不能省：坏值导入时不报错，
+        // 而是打开课表时让周次计算的 coerceIn 抛「空区间」异常，导入"成功"但 app 打不开。
+        if (file.semester.totalWeeks < 1) reject()
+        file.semester.weekOverride?.let { override ->
+            if (override !in 1..file.semester.totalWeeks) reject()
+        }
+        if (file.semester.name.isBlank()) reject()
 
         val courseIds = file.courses.map { it.id }
         // 重复 id 会让 id 映射出错，直接拒绝
@@ -265,9 +225,7 @@ object BackupCodec {
         if (file.slots.any { it.startWeek < 1 || it.endWeek < it.startWeek }) reject()
         if (file.slots.any { WeekType.entries.none { type -> type.value == it.weekType } }) reject()
 
-        // 作息表不能为空：课表左侧的节次列全靠它，空表会让整张课表塌掉。
-        // app 自身的逻辑（设置页校验 + ensureSemester）也保证它至少有 1 条，
-        // 所以空作息的文件一定不是这个 app 正常导出的。
+        // periods 空必拒：课表左侧节次列全靠它，空表整张课表塌掉；app 自身也保证至少 1 条，空作息必是坏文件。
         if (file.periods.isEmpty()) reject()
         if (file.periods.any { it.section < 1 || it.endMinute <= it.startMinute }) reject()
         if (file.periods.any { it.startMinute < 0 || it.endMinute > 24 * 60 }) reject()

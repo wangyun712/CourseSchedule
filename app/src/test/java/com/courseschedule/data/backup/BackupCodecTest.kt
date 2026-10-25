@@ -14,18 +14,9 @@ import org.junit.Test
 
 /**
  * 备份格式的单元测试。
- *
- * ## 为什么这组测试比界面测试重要
- *
- * 备份出错的后果是"用户以为有备份，真出事时导不回来"——
- * 而那时候原始数据往往已经没了。这种 bug 在开发期几乎不可能被发现
- * （要等用户重装手机才暴露），只能靠测试。
- *
- * ## 为什么这些测试能跑在 JVM 上
- *
- * 因为 [BackupCodec] 刻意不碰任何 Android API：没有 `Context`、
- * 没有 `Uri`、没有 `ContentResolver`。文件读写那一层在 [BackupManager] 里，
- * 那边才需要真机或 Robolectric。**把纯逻辑和 IO 分开，测试成本差一个数量级。**
+ * 备份出错的后果是"用户以为有备份，真出事时导不回来"，这种问题开发期几乎暴露不出来，只能靠测试钉死。
+ * 能跑在纯 JVM 上，是因为 `BackupCodec` 不碰任何 Android API（Context、Uri 等），文件 IO 在 `BackupManager`——
+ * 纯逻辑和 IO 分开，测试成本差一个数量级。
  */
 class BackupCodecTest {
 
@@ -153,6 +144,42 @@ class BackupCodecTest {
         // 没有作息 = 课表左侧的节次列全空，整张表塌掉。
         // app 自身任何路径都产不出这种文件，所以一定是坏文件。
         val broken = samplePayload().copy(periods = emptyList())
+
+        val error = assertThrows(BackupException::class.java) {
+            BackupCodec.decode(BackupCodec.encode(broken))
+        }
+        assertEquals(BackupException.Reason.INCONSISTENT, error.reason)
+    }
+
+    @Test
+    fun `总周数小于 1 的文件被拒绝`() {
+        // totalWeeks = 0 会让课表页的周次计算 coerceIn(1, 0) 抛「空区间」异常，
+        // 表现是导入成功但 app 再也打不开——必须在门口拦下
+        val payload = samplePayload()
+        val broken = payload.copy(semester = payload.semester.copy(totalWeeks = 0))
+
+        val error = assertThrows(BackupException::class.java) {
+            BackupCodec.decode(BackupCodec.encode(broken))
+        }
+        assertEquals(BackupException.Reason.INCONSISTENT, error.reason)
+    }
+
+    @Test
+    fun `手动周次越界的文件被拒绝`() {
+        val payload = samplePayload()
+        val broken = payload.copy(semester = payload.semester.copy(weekOverride = 99))
+
+        val error = assertThrows(BackupException::class.java) {
+            BackupCodec.decode(BackupCodec.encode(broken))
+        }
+        assertEquals(BackupException.Reason.INCONSISTENT, error.reason)
+    }
+
+    @Test
+    fun `学期名为空的文件被拒绝`() {
+        // app 自己的写入口（设置页校验）不允许空名称，出现空名称的一定是坏文件
+        val payload = samplePayload()
+        val broken = payload.copy(semester = payload.semester.copy(name = "  "))
 
         val error = assertThrows(BackupException::class.java) {
             BackupCodec.decode(BackupCodec.encode(broken))

@@ -5,30 +5,14 @@ import android.net.Uri
 import com.courseschedule.data.ScheduleRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 
 /**
- * 备份文件的**读写与落地**。
- *
- * ## 职责边界
- *
- * - [BackupCodec]：字节 → 对象（纯函数，可单测）
- * - [ScheduleRepository]：对象 → 数据库（事务）
- * - 本类：对象 → 文件 / 文件 → 对象，**唯一的 Android IO 层**
- *
- * 这样切开的好处是：出了问题时能立刻定位是哪一层。
- * "导出后文件是空的"→ 查本类；"文件内容不对"→ 查 Codec；
- * "导进去课表空了"→ 查 Repository 的事务。
- *
- * ## 为什么用 `ContentResolver` 而不是文件路径
- *
- * 因为走的是系统文件选择器（SAF）。用户可能把文件存到本地、
- * OneDrive、微信收藏、下载目录……**我们拿不到也不该拿到真实路径**。
- * `ContentResolver` 给的是一个 `Uri`，通过它读写由系统代理，
- * 这个 app 因此**不需要申请任何存储权限**。
- *
- * @param repository 数据来源，导入时负责落库。
- * @param resolver 由 `AppContainer` 传入 `context.contentResolver`。
+ * 备份文件的读写与落地，本类是唯一的 Android IO 层。
+ * 职责切分：`BackupCodec` 管字节 ↔ 对象（纯函数，可单测），`ScheduleRepository` 管对象落库（事务），本类管文件 ↔ 对象。
+ * 走 `ContentResolver` 是因为文件来自 SAF 系统选择器：拿不到也不该拿到真实路径，因此无需存储权限。
  */
 class BackupManager(
     private val repository: ScheduleRepository,
@@ -36,14 +20,8 @@ class BackupManager(
 ) {
 
     /**
-     * 导出到用户选定的 [uri]。
-     *
-     * 所有磁盘操作都切到 [Dispatchers.IO]：写云盘的时候可能要等几秒，
-     * 在主线程上做会直接 ANR。
-     *
-     * 打开模式用 `"wt"` 而不是 `"w"`：**w 不截断**。如果用户选了一个
-     * 已有的、更长的文件，新内容写完后后面会留下一截旧内容，
-     * 结果是一个语法都不完整的 JSON。
+     * 导出到用户选定的 [uri]。磁盘操作切到 `Dispatchers.IO`：写云盘可能要等几秒，主线程会 ANR。
+     * 打开模式用 `"wt"` 截断而不是 `"w"`：w 不截断，往更长的旧文件里写会留下残余，得到语法不完整的 JSON。
      */
     suspend fun export(uri: Uri): BackupSummary = withContext(Dispatchers.IO) {
         val payload = repository.exportBackup()
@@ -63,18 +41,10 @@ class BackupManager(
 
     /**
      * 从 [uri] 读入并覆盖当前数据。
-     *
-     * ## 顺序：先完整读进内存、解析校验，再开事务写库
-     *
-     * 这个顺序不能反过来。如果边读边写，一个坏文件写到一半失败，
-     * 用户就会处在一个"一半是新数据、一半是旧数据"的状态——
-     * 比导入失败严重得多。现在的写法保证：**要么全换，要么完全不动**。
-     *
-     * ## 大小上限
-     *
-     * 一个正常的备份文件是几十 KB 级别（20 门课不到 30KB）。
-     * 设 8MB 上限是为了防止用户误选了一个几百兆的视频：
-     * `readBytes()` 会把整个文件读进内存，不设上限就是 OOM 崩溃。
+     * 顺序不能反：先完整读进内存、解析校验，再开事务写库。边读边写的话，坏文件写到一半失败，
+     * 用户会处在"一半新一半旧"的状态——现在的写法保证要么全换、要么完全不动。
+     * 8MB 上限防误选大文件导致 OOM（正常备份几十 KB），两道防线：
+     * `statSize` 快检便宜，但部分云盘提供方拿不到大小（返回 -1）；读取时再靠 [readCapped] 边读边数兜底。
      */
     suspend fun restore(uri: Uri): BackupSummary = withContext(Dispatchers.IO) {
         val size = try {
@@ -90,7 +60,7 @@ class BackupManager(
         val text = try {
             val stream = resolver.openInputStream(uri)
                 ?: throw BackupException(BackupException.Reason.IO)
-            stream.use { it.readBytes().toString(Charsets.UTF_8) }
+            stream.use { readCapped(it) }
         } catch (e: IOException) {
             throw BackupException(BackupException.Reason.IO, e)
         } catch (e: SecurityException) {
@@ -103,11 +73,26 @@ class BackupManager(
     }
 
     /**
+     * 把流读成 UTF-8 文本，读取过程中按 [MAX_BACKUP_BYTES] 截断。
+     * statSize 可能返回 -1（部分云盘提供方不报大小），那时这是唯一可靠防线：超限立刻抛 TOO_LARGE，绝不整读进内存。
+     */
+    private fun readCapped(input: InputStream): String {
+        val buffer = ByteArrayOutputStream()
+        val chunk = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(chunk)
+            if (read == -1) break
+            total += read
+            if (total > MAX_BACKUP_BYTES) throw BackupException(BackupException.Reason.TOO_LARGE)
+            buffer.write(chunk, 0, read)
+        }
+        return String(buffer.toByteArray(), Charsets.UTF_8)
+    }
+
+    /**
      * "导入了多少东西"的摘要，只用于给用户一句反馈。
-     *
-     * 为什么不在界面上只说"导入成功"：用户需要确认"我这份备份里确实有
-     * 12 门课"——如果他刚才选错了文件（比如导了一份空的旧备份），
-     * 只说"成功"会让他以为数据都在。
+     * 带条数是防"选错文件还以为成功"：只报"导入成功"，用户无法确认这份备份里的数据确实都在。
      */
     data class BackupSummary(val courses: Int, val slots: Int)
 

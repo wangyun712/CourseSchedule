@@ -41,7 +41,7 @@ class WeekCalculatorTest {
     }
 
     @Test
-    fun `超出总周数封顶在最后一击`() {
+    fun `超出总周数封顶在最后一周`() {
         assertEquals(20, WeekCalculator.weekOf(start, day(2027, 3, 1), 20))
     }
 
